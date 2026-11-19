@@ -21,7 +21,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 OFFI = os.path.join(os.path.dirname(BASE), "mascote", "offi.png")
 OUT = os.path.join(BASE, "out")
 # margens da peça vertical: story do Instagram (padrão) ou TikTok (--tiktok)
-SAFE = dict(top=250, bot=300, padr=96, txt_bot=260)
+SAFE = dict(top=250, bot=300, padr=96, txt_bot=420)
 SAFE_TIKTOK = dict(top=210, bot=470, padr=180, txt_bot=560)
 
 CSS = """
