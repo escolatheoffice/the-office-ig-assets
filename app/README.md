@@ -23,3 +23,10 @@ Abra http://127.0.0.1:8765 e:
 A lista "Vídeos gerados" mostra tudo o que já está em `reels/`.
 O servidor escuta só em `127.0.0.1` por padrão; use `--host 0.0.0.0` para abrir
 no celular pela mesma rede Wi-Fi.
+
+## Versão online (sem instalar nada)
+
+`app/reel_studio_online.html` é a mesma ferramenta rodando 100% no navegador:
+a animação é desenhada num canvas e gravada em tempo real (MP4 no Chrome/Edge/Safari,
+WebM no Firefox). Publicada como página privada no claude.ai:
+https://claude.ai/artifact/XXb1Qa6yMe9aSXcbiLvWEc
