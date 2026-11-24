@@ -42,3 +42,13 @@ escritos à mão. Para ampliar, acrescente frases nas listas do script e rode
 Na página, "Buscar no banco" escolhe 3 títulos e 3 legendas do tema (detectado pela tag/descrição
 ou escolhido na lista), com hashtags menos usadas. O que é confirmado fica registrado no banco de
 dados da página (coleção `usos`) e deixa de aparecer no topo das buscas.
+
+## 100 modelos de vídeo
+
+A versão online tem 100 modelos que combinam 6 elementos: layout (5), entrada do texto (5),
+fundo (5), destaque da palavra-chave (4), movimento do Offi (4) e encerramento (3).
+Os modelos são fixos (sempre os mesmos 100, numerados) e cada um difere de todos os outros
+em pelo menos 3 elementos. O Modelo 001 é o visual original do `gen_reel.py`.
+Por padrão, depois de cada vídeo o app sorteia outro modelo, priorizando os que ainda não
+foram usados (histórico salvo no banco de dados da página). O número do modelo vai no nome
+do arquivo (`...-m037.mp4`). Amostra dos 16 primeiros: `app/modelos-amostra.jpg`.
