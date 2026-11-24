@@ -186,15 +186,21 @@ function renderFrame(t){
 window.renderFrame = renderFrame;
 """
 
-def build_html(texto, tag, cta, hsize, outro_t, fade_t0, fade_t1):
+def timings(duration):
+    """(outro_t, fade_t0, fade_t1) para uma duracao — usado no render e na previa do Reel Studio."""
+    return duration - 4.5, duration - 0.5, duration
+
+
+def build_html(texto, tag, cta, hsize, outro_t, fade_t0, fade_t1, offi_src=None):
     hook, n = lines_html(texto)
+    offi_src = offi_src or f"file://{OFFI}"
     line_step = 0.25
     line_dur = 0.5
     line_start = 1.4
     css = CSS % dict(w=W, h=H, hsize=hsize)
     body = (
         f"<div id='bg'></div><div id='glow'></div>"
-        f"<div id='offiWrap'><img src='file://{OFFI}'></div>"
+        f"<div id='offiWrap'><img src='{offi_src}'></div>"
         f"<div id='tag'>{html.escape(tag)}</div>"
         f"<div id='hook'>{hook}</div>"
         f"<div id='mark'>THE <span>OFFICE</span></div>"
@@ -214,16 +220,15 @@ def build_html(texto, tag, cta, hsize, outro_t, fade_t0, fade_t1):
 
 
 def render(texto, tag, out_dir, cta="Chama no direct →", duration=DEFAULT_DURATION, fps=DEFAULT_FPS,
-           hsize=104, sample_times=None):
+           hsize=104, sample_times=None, progress=None):
+    """progress: callback opcional progress(etapa, feito, total) — usado pelo Reel Studio."""
     os.makedirs(out_dir, exist_ok=True)
     frames_dir = os.path.join(out_dir, "_frames")
     if os.path.exists(frames_dir):
         shutil.rmtree(frames_dir)
     os.makedirs(frames_dir)
 
-    outro_t = duration - 4.5   # ~9.0s quando duration=13.5
-    fade_t0 = duration - 0.5
-    fade_t1 = duration
+    outro_t, fade_t0, fade_t1 = timings(duration)   # outro ~9.0s quando duration=13.5
 
     html_path = os.path.join(out_dir, "_reel.html")
     open(html_path, "w").write(build_html(texto, tag, cta, hsize, outro_t, fade_t0, fade_t1))
@@ -238,6 +243,8 @@ def render(texto, tag, out_dir, cta="Chama no direct →", duration=DEFAULT_DURA
             t = i / fps
             pg.evaluate(f"renderFrame({t})")
             pg.screenshot(path=os.path.join(frames_dir, f"f_{i:05d}.png"))
+            if progress:
+                progress("frames", i + 1, total_frames)
         # amostras pra conferencia visual, se pedido
         samples = {}
         if sample_times:
@@ -261,6 +268,8 @@ def render(texto, tag, out_dir, cta="Chama no direct →", duration=DEFAULT_DURA
         "-movflags", "+faststart",
         mp4,
     ]
+    if progress:
+        progress("encode", 0, 1)
     subprocess.run(cmd, check=True, capture_output=True)
     shutil.rmtree(frames_dir)
     return mp4, samples
