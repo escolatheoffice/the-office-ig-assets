@@ -45,10 +45,20 @@ dados da página (coleção `usos`) e deixa de aparecer no topo das buscas.
 
 ## 100 modelos de vídeo
 
-A versão online tem 100 modelos que combinam 6 elementos: layout (5), entrada do texto (5),
-fundo (5), destaque da palavra-chave (4), movimento do Offi (4) e encerramento (3).
-Os modelos são fixos (sempre os mesmos 100, numerados) e cada um difere de todos os outros
-em pelo menos 3 elementos. O Modelo 001 é o visual original do `gen_reel.py`.
-Por padrão, depois de cada vídeo o app sorteia outro modelo, priorizando os que ainda não
-foram usados (histórico salvo no banco de dados da página). O número do modelo vai no nome
-do arquivo (`...-m037.mp4`). Amostra dos 16 primeiros: `app/modelos-amostra.jpg`.
+Os vídeos mudam de roteiro, não só de estilo. São 5 estruturas:
+
+1. **Frase com Offi**: o modelo original (frase animada, Offi, logo + CTA).
+2. **Palavra gigante**: uma palavra por vez, enorme; a palavra-chave pode inverter a tela.
+3. **Pergunta e resposta**: tela verde com a pergunta (todas as linhas menos a última), depois a resposta (última linha) em destaque.
+4. **Dois tempos**: primeira metade em cima, uma linha verde corta a tela, a virada embaixo.
+5. **Lista**: cada linha da frase vira um cartão numerado que entra um por vez.
+
+Cada estrutura combina estilos de entrada do texto, fundo, destaque, movimento do Offi e
+encerramento (a "Frase com Offi" também varia o layout). São 30 + 18 + 18 + 17 + 17 modelos;
+dois modelos da mesma estrutura diferem em pelo menos 3 estilos. O Modelo 001 é o original.
+
+Os 100 modelos ficam no banco de dados da página (coleção `modelos`, documentos `m001`…`m100`,
+cópia em `app/modelos.json`). Na página, "Incluir este modelo no sorteio" tira ou devolve um
+modelo do rodízio. Depois de cada vídeo o app sorteia outro modelo, de estrutura diferente,
+priorizando os nunca usados (histórico na coleção `usos`). O número vai no nome do arquivo
+(`...-m037.mp4`). Amostra das 5 estruturas: `app/estruturas-amostra.jpg`.

@@ -208,7 +208,9 @@ textarea{resize:vertical;min-height:80px}
           <button class="btn sm" id="shuffle" type="button">Sortear outro</button>
         </div>
         <p class="mname" id="modeloNome"></p>
+        <label class="check"><input type="checkbox" id="ativoToggle" checked> Incluir este modelo no sorteio</label>
         <label class="check"><input type="checkbox" id="autoShuffle" checked> Sortear um modelo novo depois de cada vídeo</label>
+        <span class="hint" id="modeloFonte"></span>
       </div>
     </section>
   </div>
@@ -244,8 +246,9 @@ function tokenize(line){
   return out;
 }
 
-// ===== 100 modelos: combinacoes de 6 dimensoes (modelo 1 = original do gen_reel.py) =====
+// ===== 100 modelos: estrutura (roteiro) + 6 estilos. Modelo 1 = original do gen_reel.py =====
 const DIMS = {
+  estrutura:['Frase com Offi', 'Palavra gigante', 'Pergunta e resposta', 'Dois tempos', 'Lista'],
   layout:  ['Clássico', 'Centro', 'Topo', 'Lateral', 'Cartão'],
   entrada: ['Subida', 'Deslize', 'Pop', 'Palavra a palavra', 'Cortina'],
   fundo:   ['Brilho de canto', 'Brilho central', 'Grade', 'Listras', 'Partículas'],
@@ -255,56 +258,117 @@ const DIMS = {
 };
 const DK = Object.keys(DIMS);
 function mulberry32(a){ return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-const MODELOS = (() => {
-  const rnd = mulberry32(2026), out = [[0, 0, 0, 0, 0, 0]];
-  const dist = (a, b) => a.reduce((n, v, i) => n + (v !== b[i] ? 1 : 0), 0);
-  let guard = 0;
-  while (out.length < 100 && guard++ < 200000){
-    const c = DK.map(k => Math.floor(rnd() * DIMS[k].length));
-    if (out.every(m => dist(m, c) >= 3)) out.push(c);
-  }
-  return out.map((c, i) => { const o = { n: i + 1 }; DK.forEach((k, j) => o[k] = c[j]); return o; });
+// dimensoes que cada estrutura realmente usa (layout so vale para "Frase com Offi")
+const efetivas = m => m.estrutura === 0 ? DK.slice(1) : DK.slice(2);
+function distModelos(a, b){
+  if (a.estrutura !== b.estrutura) return 9;
+  return efetivas(a).filter(k => a[k] !== b[k]).length;
+}
+const MODELOS_PADRAO = (() => {
+  const rnd = mulberry32(2026), quota = [30, 18, 18, 17, 17], out = [];
+  const first = { estrutura: 0, layout: 0, entrada: 0, fundo: 0, destaque: 0, offi: 0, final: 0 };
+  const tryFill = (e, need, minD) => {
+    let guard = 0;
+    while (out.filter(m => m.estrutura === e).length < need && guard++ < 60000){
+      const c = { estrutura: e }; DK.slice(1).forEach(k => c[k] = Math.floor(rnd() * DIMS[k].length)); if (e !== 0) c.layout = 0;
+      if (out.every(m => distModelos(m, c) >= minD)) out.push(c);
+    }
+  };
+  out.push(first);
+  quota.forEach((q, e) => { tryFill(e, q, 3); tryFill(e, q, 2); });
+  out.sort((a, b) => (a === first ? -1 : b === first ? 1 : 0));
+  // intercala estruturas para a numeracao nao ficar em blocos
+  const by = quota.map((_, e) => out.filter(m => m.estrutura === e && m !== first));
+  const seq = [first]; while (by.some(l => l.length)) by.forEach(l => { if (l.length) seq.push(l.shift()); });
+  return seq.slice(0, 100).map((m, i) => ({ ...m, n: i + 1, ativo: true }));
 })();
-function modeloNome(m){ return DK.map(k => DIMS[k][m[k]]).join(' · '); }
+let MODELOS = MODELOS_PADRAO;
+function modeloNome(m){ return [DIMS.estrutura[m.estrutura], ...(m.estrutura === 0 ? ['layout'] : []).map(k => DIMS[k][m[k]]), ...['entrada', 'fundo', 'destaque', 'offi', 'final'].map(k => DIMS[k][m[k]])].join(' · '); }
 
-// particulas fixas (mesmas em todo frame)
 const DOTS = (() => { const r = mulberry32(7); return Array.from({ length: 70 }, () => ({ x: r() * W, y: r() * H, r: 2 + r() * 4, a: .12 + r() * .3, v: 15 + r() * 35 })); })();
 
-let S = {}; // estado atual (parametros + layout + modelo)
+let S = {};
 let MODELO = MODELOS[0];
 
-function layout(){
-  const p = S, m = MODELO;
-  ctx.font = `900 ${p.hsize}px ${FONT}`;
-  const ls = -0.035 * p.hsize, lh = 0.98 * p.hsize;
-  const L = [
-    { x: 96, maxW: 888, align: 'left', y: 1080, offi: [540, 441.6, 460] },
-    { x: 110, maxW: 860, align: 'center', yc: 800, offi: [540, 1360, 400] },
-    { x: 96, maxW: 888, align: 'left', y: 360, offi: [720, 1250, 560] },
-    { x: 96, maxW: 800, align: 'left', y: 560, offi: [850, 1460, 540] },
-    { x: 136, maxW: 808, align: 'left', y: 1000, offi: [540, 540, 400] },
-  ][m.layout];
-  const blocks = [];
-  p.texto.split('|').forEach(raw => {
-    const toks = tokenize(raw); const rows = [[]]; let x = 0;
+// ---- bloco de texto generico (quebra de linha, alinhamento, tokens com *destaque*) ----
+function buildBlock(raw, size, x, maxW, align, pos){
+  ctx.font = `900 ${size}px ${FONT}`;
+  const ls = -0.035 * size, lh = 0.98 * size, blocks = [];
+  raw.split('|').forEach(r => {
+    const toks = tokenize(r); const rows = [[]]; let cx = 0;
     toks.forEach(tk => {
       const w = spacedWidth(tk.text, ls) + ls;
-      if (!tk.space && x > 0 && x + w - ls > L.maxW){ rows.push([]); x = 0; }
-      if (tk.space && x === 0) return;
-      rows[rows.length - 1].push({ ...tk, x, w: w - ls }); x += w;
+      if (!tk.space && cx > 0 && cx + w - ls > maxW){ rows.push([]); cx = 0; }
+      if (tk.space && cx === 0) return;
+      rows[rows.length - 1].push({ ...tk, x: cx, w: w - ls }); cx += w;
     });
-    blocks.push(rows.map(r => { while (r.length && r[r.length - 1].space) r.pop(); const last = r[r.length - 1]; return { toks: r, w: last ? last.x + last.w : 0 }; }));
+    blocks.push(rows.map(rw => { while (rw.length && rw[rw.length - 1].space) rw.pop(); const l = rw[rw.length - 1]; return { toks: rw, w: l ? l.x + l.w : 0 }; }));
   });
   const totalH = blocks.reduce((a, r) => a + r.length * lh, 0);
-  let y = L.yc != null ? L.yc - totalH / 2 : L.y; const lines = []; let wi = 0;
-  blocks.forEach(rows => {
-    rows.forEach(r => { r.off = L.align === 'center' ? (L.maxW - r.w) / 2 : 0; r.toks.forEach(tk => { if (!tk.space) tk.wi = wi++; }); });
-    lines.push({ y, rows, h: rows.length * lh }); y += rows.length * lh;
-  });
+  let y = pos.yc != null ? pos.yc - totalH / 2 : pos.y; const lines = []; let wi = 0;
+  blocks.forEach(rows => { rows.forEach(rw => { rw.off = align === 'center' ? (maxW - rw.w) / 2 : 0; rw.toks.forEach(tk => { if (!tk.space) tk.wi = wi++; }); }); lines.push({ y, rows, h: rows.length * lh }); y += rows.length * lh; });
   const mm = ctx.measureText('Hg');
-  Object.assign(p, { lines, lh, ls, L, totalH, nWords: wi, y0: lines.length ? lines[0].y : 0,
-    baseOff: lh / 2 + (mm.fontBoundingBoxAscent - mm.fontBoundingBoxDescent) / 2,
-    outro: p.duration - 4.5, fade0: p.duration - .5, fade1: p.duration });
+  return { lines, lh, ls, size, x, maxW, totalH, nWords: wi, y0: lines.length ? lines[0].y : 0, baseOff: lh / 2 + (mm.fontBoundingBoxAscent - mm.fontBoundingBoxDescent) / 2 };
+}
+// tamanho que cabe: reduz a fonte ate o bloco caber na altura
+function fitBlock(raw, size, x, maxW, align, pos, maxH){
+  let b = buildBlock(raw, size, x, maxW, align, pos);
+  while (b.totalH > maxH && size > 48){ size -= 6; b = buildBlock(raw, size, x, maxW, align, pos); }
+  return b;
+}
+const splitLines = s => s.split('|').map(x => x.trim()).filter(Boolean);
+
+function layout(){
+  const p = S, m = MODELO, OUT = p.duration - 4.5;
+  Object.assign(p, { outro: OUT, fade0: p.duration - .5, fade1: p.duration });
+  const lines = splitLines(p.texto), e = m.estrutura;
+  p.offiPath = null;
+  if (e === 0){
+    const L = [
+      { x: 96, maxW: 888, align: 'left', y: 1080, offi: [540, 441.6, 460] },
+      { x: 110, maxW: 860, align: 'center', yc: 800, offi: [540, 1360, 400] },
+      { x: 96, maxW: 888, align: 'left', y: 360, offi: [720, 1250, 560] },
+      { x: 96, maxW: 800, align: 'left', y: 560, offi: [850, 1460, 540] },
+      { x: 136, maxW: 808, align: 'left', y: 1000, offi: [540, 540, 400] },
+    ][m.layout];
+    p.L = L; p.main = buildBlock(p.texto, p.hsize, L.x, L.maxW, L.align, L);
+    p.offiBase = () => L.offi;
+  } else if (e === 1){
+    // palavra gigante: uma palavra por vez
+    const words = []; lines.forEach(l => tokenize(l).forEach(tk => { if (!tk.space) tk.text.split(/\s+/).filter(Boolean).forEach(w => words.push({ text: w, em: tk.em })); }));
+    const span = Math.max(1.2, OUT - 1.6), slot = Math.min(1.1, span / Math.max(1, words.length));
+    words.forEach((w, i) => { w.t0 = 1.2 + i * slot; w.t1 = 1.2 + (i + 1) * slot; });
+    if (words.length) words[words.length - 1].t1 = OUT;
+    p.words = words; p.slot = slot;
+    p.offiBase = () => [540, 1480, 300];
+  } else if (e === 2){
+    const q = lines.length > 1 ? lines.slice(0, -1).join('|') : (p.tag ? p.tag + '?' : lines[0]);
+    const a = lines.length > 1 ? lines[lines.length - 1] : lines[0];
+    p.mid = 1.2 + (OUT - 1.2) * .5;
+    p.qb = fitBlock(q, Math.round(p.hsize * .85), 96, 820, 'left', { yc: 720 }, 760);
+    p.ab = fitBlock(a, Math.round(p.hsize * 1.3), 90, 900, 'center', { yc: 900 }, 700);
+    p.offiBase = t => { const k = easeInOutCubic(clamp01((t - p.mid) / .6)); return [800 + (540 - 800) * k, 1400 + (440 - 1400) * k, 420 + (320 - 420) * k]; };
+  } else if (e === 3){
+    let top, bot;
+    if (lines.length > 1){ const h = Math.ceil(lines.length / 2); top = lines.slice(0, h).join('|'); bot = lines.slice(h).join('|'); }
+    else { const w = lines[0].split(' '), h = Math.ceil(w.length / 2); top = w.slice(0, h).join(' '); bot = w.slice(h).join(' ') || top; }
+    p.tb = fitBlock(top, Math.round(p.hsize * .78), 96, 888, 'left', { yc: 600 }, 480);
+    p.bb = fitBlock(bot, p.hsize, 96, 888, 'left', { yc: 1160 }, 480);
+    p.divT = 1.4 + p.tb.lines.length * .25 + .6; p.botT = p.divT + .55;
+    p.offiBase = () => [870, 330, 270];
+  } else {
+    const items = lines.length ? lines : [p.texto];
+    // cartoes centralizados na tela; fonte diminui se nao couber entre o topo e a zona da legenda
+    let size = Math.round(p.hsize * .74), cards, total;
+    const montar = () => { cards = []; let y = 0; items.forEach(it => { const b = buildBlock(it, size, 210, 760, 'left', { y: y + 40 }); const h = b.totalH + 80; cards.push({ b, y, h, it }); y += h + 32; }); total = y - 32; };
+    montar(); while (total > 1040 && size > 44){ size -= 4; montar(); }
+    const top = Math.max(430, 980 - total / 2);
+    cards.forEach(c => { c.y += top; c.b = buildBlock(c.it, size, 210, 760, 'left', { y: c.y + 40 }); });
+    const step = Math.min(1.1, Math.max(.45, (OUT - 2.6) / Math.max(1, cards.length)));
+    cards.forEach((c, i) => c.t0 = 1.5 + i * step);
+    p.cards = cards;
+    p.offiBase = () => [870, 300, 260];
+  }
 }
 
 function drawBackground(t, ox, oy){
@@ -331,7 +395,7 @@ function drawBackground(t, ox, oy){
 }
 
 function offiState(t){
-  const OUT = S.outro, [bx, by, bs] = S.L.offi, M = MODELO.offi, F = MODELO.final;
+  const OUT = S.outro, [bx, by, bs] = S.offiBase(t), M = MODELO.offi, F = MODELO.final;
   let ty, s, tx = 0, op = 1, rot = 0;
   if (t < .9){ ty = mix(t, 0, .9, 300, -20, easeOutBack); s = mix(t, 0, .9, .7, 1.08, easeOutBack); op = mix(t, 0, .5, 0, 1, easeOutCubic); }
   else if (t < 1.15){ ty = mix(t, .9, 1.15, -20, 0, easeOutCubic); s = mix(t, .9, 1.15, 1.08, 1, easeOutCubic); }
@@ -343,70 +407,67 @@ function offiState(t){
     else { tx = Math.sin(u * 1.1) * 22; ty = Math.cos(u * 1.1) * 16; }
   }
   if (t >= OUT){
-    const q = clamp01((t - OUT) / .8), e = easeInOutCubic(q);
+    const e = easeInOutCubic(clamp01((t - OUT) / .8));
     if (F === 0){ tx += (840 - bx - tx) * e; ty += (-220 - by - ty) * e; s *= 1 - .55 * e; }
     else if (F === 2){ s *= 1 - e; op *= 1 - e; }
   }
   return { cx: bx + tx, cy: by + ty, size: bs * s, op, rot };
 }
 
-function lineAnim(t, i){
-  // progresso e transformacao de uma linha inteira (entrada + saida)
-  const s0 = 1.4 + i * .25, s1 = s0 + .5, OUT = S.outro, E = MODELO.entrada, F = MODELO.final;
+// animacao de uma linha de um bloco: entrada (estilo) + saida (encerramento)
+function lineAnim(t, i, t0, outT){
+  const s0 = t0 + i * .25, E = MODELO.entrada, F = MODELO.final;
   const p = clamp01((t - s0) / .5);
-  const a = { op: E === 3 || E === 4 ? (t >= s0 ? 1 : 0) : easeOutCubic(p), dx: 0, dy: 0, sc: 1, clip: E === 4 ? easeInOutCubic(p) : 1, s0, s1 };
+  const a = { op: E === 3 || E === 4 ? (t >= s0 ? 1 : 0) : easeOutCubic(p), dx: 0, dy: 0, sc: 1, clip: E === 4 ? easeInOutCubic(p) : 1 };
   if (E === 0) a.dy = 50 * (1 - easeOutCubic(p));
   else if (E === 1) a.dx = -90 * (1 - easeOutCubic(p));
   else if (E === 2) a.sc = p <= 0 ? .6 : .6 + .4 * easeOutBack(p);
-  if (t > OUT){
-    const q = clamp01((t - OUT) / .4);
-    if (F === 0){ a.op *= 1 - easeInCubic(q); a.dy -= 40 * easeInCubic(q); a.sc *= 1 - .05 * easeInCubic(q); }
-    else if (F === 2){ a.op *= 1 - easeInCubic(q); a.sc *= 1 + .3 * easeInCubic(q); }
-    else if (t > OUT + .6) a.op = 0;
+  if (t > outT){
+    const q = clamp01((t - outT) / .4);
+    if (F === 2 && outT === S.outro){ a.op *= 1 - easeInCubic(q); a.sc *= 1 + .3 * easeInCubic(q); }
+    else if (F === 1 && outT === S.outro){ if (t > outT + .6) a.op = 0; }
+    else { a.op *= 1 - easeInCubic(q); a.dy -= 40 * easeInCubic(q); a.sc *= 1 - .05 * easeInCubic(q); }
   }
   return a;
 }
 
-function drawText(t){
-  const p = S, K = MODELO.destaque, E = MODELO.entrada;
-  let lastEnd = 1.4; p.lines.forEach((ln, i) => { lastEnd = Math.max(lastEnd, 1.4 + i * .25 + .5); });
-  if (E === 3) lastEnd = Math.max(lastEnd, 1.4 + p.nWords * .12 + .35);
+// desenha um bloco; opts: t0 (inicio), outT (saida), ink (cor do texto), em (cor do destaque), K (estilo do destaque)
+function drawBlock(t, B, opts){
+  const K = opts.K != null ? opts.K : MODELO.destaque, E = MODELO.entrada, t0 = opts.t0, outT = opts.outT;
+  const ink = opts.ink || '#fff', emc = opts.em || LIME, under = opts.under || BG;
+  let lastEnd = t0; B.lines.forEach((ln, i) => { lastEnd = Math.max(lastEnd, t0 + i * .25 + .5); });
+  if (E === 3) lastEnd = Math.max(lastEnd, t0 + B.nWords * .12 + .35);
   const pS = lastEnd + .2, pM = pS + .25, pE = pS + .5;
   const kS = t < pM ? mix(t, pS, pM, 1, 1.18, easeOutCubic) : mix(t, pM, pE, 1.18, 1, easeOutCubic);
   const kP = easeOutCubic(clamp01((t - pS) / .45));
-  ctx.font = `900 ${p.hsize}px ${FONT}`; ctx.textBaseline = 'alphabetic';
-  if (MODELO.layout === 4){
-    const op = mix(t, 1.2, 1.6, 0, 1, easeOutCubic) * (t > p.outro ? 1 - clamp01((t - p.outro) / .4) : 1);
-    if (op > 0){ ctx.save(); ctx.globalAlpha = op; ctx.beginPath(); ctx.roundRect(72, p.y0 - 64, 936, p.totalH + 128, 36);
-      ctx.fillStyle = 'rgba(255,255,255,.045)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(212,255,31,.55)'; ctx.stroke(); ctx.restore(); }
-  }
-  p.lines.forEach((ln, i) => {
-    const a = lineAnim(t, i); if (a.op <= 0) return;
-    const x0 = p.L.x, cx = x0 + p.L.maxW / 2, cy = ln.y + ln.h / 2;
-    ctx.save(); ctx.globalAlpha = a.op;
+  ctx.font = `900 ${B.size}px ${FONT}`; ctx.textBaseline = 'alphabetic';
+  B.lines.forEach((ln, i) => {
+    const a = lineAnim(t, i, t0, outT); if (a.op <= 0) return;
+    const cx = B.x + B.maxW / 2, cy = ln.y + ln.h / 2;
+    ctx.save(); ctx.globalAlpha = (opts.alpha || 1) * a.op;
     ctx.translate(a.dx, a.dy); ctx.translate(cx, cy); ctx.scale(a.sc, a.sc); ctx.translate(-cx, -cy);
     ln.rows.forEach((row, r) => {
-      const top = ln.y + r * p.lh, by = top + p.baseOff, rx = x0 + row.off;
+      const top = ln.y + r * B.lh, by = top + B.baseOff, rx = B.x + row.off;
       ctx.save();
-      if (a.clip < 1){ ctx.beginPath(); ctx.rect(rx - 20, top - 20, (row.w + 40) * a.clip, p.lh + 40); ctx.clip(); }
+      if (a.clip < 1){ ctx.beginPath(); ctx.rect(rx - 20, top - 20, (row.w + 40) * a.clip, B.lh + 40); ctx.clip(); }
       row.toks.forEach(tk => {
         if (tk.space) return;
         let wop = 1, wdy = 0;
-        if (E === 3){ const w0 = 1.4 + tk.wi * .12; wop = easeOutCubic(clamp01((t - w0) / .35)); wdy = 30 * (1 - wop); if (wop <= 0) return; }
+        if (E === 3){ const w0 = t0 + tk.wi * .12; wop = easeOutCubic(clamp01((t - w0) / .35)); wdy = 30 * (1 - wop); if (wop <= 0) return; }
         const x = rx + tk.x;
-        ctx.save(); ctx.globalAlpha = a.op * wop; ctx.translate(0, wdy);
-        if (!tk.em){ ctx.fillStyle = '#fff'; drawSpaced(tk.text, x, by, p.ls); }
-        else if (K === 0){ const ex = x + tk.w / 2, ey = top + p.lh / 2; ctx.translate(ex, ey); ctx.scale(kS, kS); ctx.translate(-ex, -ey); ctx.fillStyle = LIME; drawSpaced(tk.text, x, by, p.ls); }
+        ctx.save(); ctx.globalAlpha *= wop; ctx.translate(0, wdy);
+        if (!tk.em){ ctx.fillStyle = ink; drawSpaced(tk.text, x, by, B.ls); }
+        else if (K === 0){ const ex = x + tk.w / 2, ey = top + B.lh / 2; ctx.translate(ex, ey); ctx.scale(kS, kS); ctx.translate(-ex, -ey); ctx.fillStyle = emc; drawSpaced(tk.text, x, by, B.ls); }
         else if (K === 1){
-          ctx.fillStyle = '#fff'; drawSpaced(tk.text, x, by, p.ls);
-          const bw = (tk.w + 14) * kP; if (bw > 0){ ctx.beginPath(); ctx.rect(x - 4, top + p.lh * .06, bw, p.lh * .92); ctx.fillStyle = LIME; ctx.fill(); ctx.clip(); ctx.fillStyle = BG; drawSpaced(tk.text, x, by, p.ls); }
+          ctx.fillStyle = ink; drawSpaced(tk.text, x, by, B.ls);
+          const bw = (tk.w + 14) * kP; if (bw > 0){ ctx.beginPath(); ctx.rect(x - 4, top + B.lh * .06, bw, B.lh * .92); ctx.fillStyle = emc; ctx.fill(); ctx.clip(); ctx.fillStyle = under; drawSpaced(tk.text, x, by, B.ls); }
         } else if (K === 2){
-          ctx.fillStyle = LIME; drawSpaced(tk.text, x, by, p.ls);
-          ctx.fillRect(x, by + p.hsize * .1, tk.w * kP, Math.max(6, p.hsize * .08));
+          ctx.fillStyle = emc; drawSpaced(tk.text, x, by, B.ls);
+          ctx.fillRect(x, by + B.size * .1, tk.w * kP, Math.max(6, B.size * .08));
         } else {
-          const ex = x + tk.w / 2, ey = top + p.lh / 2, wig = Math.sin(t * 5) * .03 * (t > pS ? 1 : 0);
+          const ex = x + tk.w / 2, ey = top + B.lh / 2, wig = Math.sin(t * 5) * .03 * (t > pS ? 1 : 0);
           ctx.translate(ex, ey); ctx.rotate(wig); ctx.translate(-ex, -ey);
-          ctx.shadowColor = 'rgba(212,255,31,.8)'; ctx.shadowBlur = 18 + 18 * kP; ctx.fillStyle = LIME; drawSpaced(tk.text, x, by, p.ls);
+          ctx.shadowColor = emc === LIME ? 'rgba(212,255,31,.8)' : 'rgba(0,0,0,.35)'; ctx.shadowBlur = 18 + 18 * kP; ctx.fillStyle = emc; drawSpaced(tk.text, x, by, B.ls);
         }
         ctx.restore();
       });
@@ -414,6 +475,73 @@ function drawText(t){
     });
     ctx.restore();
   });
+}
+
+// ---- conteudo de cada estrutura ----
+function drawConteudo(t){
+  const p = S, e = MODELO.estrutura, OUT = p.outro;
+  if (e === 0){
+    if (MODELO.layout === 4){
+      const op = mix(t, 1.2, 1.6, 0, 1, easeOutCubic) * (t > OUT ? 1 - clamp01((t - OUT) / .4) : 1);
+      if (op > 0){ ctx.save(); ctx.globalAlpha = op; ctx.beginPath(); ctx.roundRect(72, p.main.y0 - 64, 936, p.main.totalH + 128, 36);
+        ctx.fillStyle = 'rgba(255,255,255,.045)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(212,255,31,.55)'; ctx.stroke(); ctx.restore(); }
+    }
+    drawBlock(t, p.main, { t0: 1.4, outT: OUT });
+  } else if (e === 1){
+    const w = p.words.find(x => t >= x.t0 && t < x.t1) || (t >= OUT && p.words.length ? p.words[p.words.length - 1] : null);
+    if (!w || t < 1.2) return;
+    const outOp = t > OUT ? 1 - clamp01((t - OUT) / .35) : 1; if (outOp <= 0) return;
+    const q = clamp01((t - w.t0) / Math.min(.22, p.slot * .6)), E = MODELO.entrada, K = MODELO.destaque;
+    let size = 230; ctx.font = `900 ${size}px ${FONT}`; let ls = -.035 * size, tw = spacedWidth(w.text, ls);
+    if (tw > 900){ size = Math.max(70, size * 900 / tw); ctx.font = `900 ${size}px ${FONT}`; ls = -.035 * size; tw = spacedWidth(w.text, ls); }
+    const cy = 860; let dx = 0, dy = 0, sc = 1, op = 1, clip = 1;
+    if (E === 0){ dy = 70 * (1 - easeOutCubic(q)); op = easeOutCubic(q); }
+    else if (E === 1){ dx = -120 * (1 - easeOutCubic(q)); op = easeOutCubic(q); }
+    else if (E === 2){ sc = 1.35 - .35 * easeOutBack(q); op = clamp01(q * 2); }
+    else if (E === 4) clip = easeInOutCubic(q);
+    if (w.em && K === 1){ ctx.save(); ctx.globalAlpha = outOp; ctx.fillStyle = LIME; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+    ctx.save(); ctx.globalAlpha = op * outOp; ctx.translate(540 + dx, cy + dy); ctx.scale(sc, sc);
+    if (clip < 1){ ctx.beginPath(); ctx.rect(-tw / 2 - 20, -size, (tw + 40) * clip, size * 2); ctx.clip(); }
+    ctx.textBaseline = 'middle';
+    if (!w.em) ctx.fillStyle = '#fff';
+    else if (K === 1) ctx.fillStyle = BG;
+    else { ctx.fillStyle = LIME; if (K === 3){ ctx.shadowColor = 'rgba(212,255,31,.85)'; ctx.shadowBlur = 40; } if (K === 0){ const k = 1 + .08 * Math.sin(clamp01((t - w.t0) / .5) * Math.PI); ctx.scale(k, k); } }
+    drawSpaced(w.text, -tw / 2, 0, ls);
+    if (w.em && K === 2){ ctx.fillRect(-tw / 2, size * .42, tw * easeOutCubic(clamp01((t - w.t0) / .4)), size * .07); }
+    ctx.restore();
+    // contador discreto de progresso (barrinha)
+    const idx = p.words.indexOf(w), prog = (idx + 1) / p.words.length;
+    ctx.save(); ctx.globalAlpha = .5 * outOp; ctx.fillStyle = w.em && K === 1 ? BG : LIME; ctx.fillRect(96, 1180, 888 * prog, 6); ctx.restore();
+  } else if (e === 2){
+    const inP = easeInOutCubic(clamp01((t - 1.0) / .4)), outP = easeInOutCubic(clamp01((t - p.mid) / .45));
+    if (inP > 0 && outP < 1){ ctx.fillStyle = LIME; ctx.fillRect(0, 0, W * inP, H * (1 - outP)); }
+    if (t < p.mid + .45){
+      ctx.save(); ctx.font = `900 260px ${FONT}`; ctx.fillStyle = 'rgba(6,7,6,.12)'; ctx.textBaseline = 'alphabetic';
+      ctx.globalAlpha = inP * (1 - outP); ctx.fillText('?', 760, 560); ctx.restore();
+      drawBlock(t, p.qb, { t0: 1.45, outT: p.mid - .1, ink: BG, em: BG, under: LIME, K: MODELO.destaque === 0 || MODELO.destaque === 3 ? 2 : MODELO.destaque, alpha: 1 });
+    }
+    drawBlock(t, p.ab, { t0: p.mid + .35, outT: OUT });
+  } else if (e === 3){
+    drawBlock(t, p.tb, { t0: 1.4, outT: OUT, alpha: .85 });
+    const dp = easeInOutCubic(clamp01((t - p.divT) / .5)), dOut = t > OUT ? 1 - clamp01((t - OUT) / .4) : 1;
+    if (dp > 0 && dOut > 0){ ctx.save(); ctx.globalAlpha = dOut; ctx.fillStyle = LIME; ctx.fillRect(96, 878, 888 * dp, 8);
+      ctx.beginPath(); ctx.arc(96 + 888 * dp, 882, 14, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+    drawBlock(t, p.bb, { t0: p.botT, outT: OUT });
+  } else {
+    p.cards.forEach((c, i) => {
+      const E = MODELO.entrada, q = clamp01((t - c.t0) / .45); if (q <= 0) return;
+      const outOp = t > OUT ? 1 - clamp01((t - OUT - i * .06) / .35) : 1; if (outOp <= 0) return;
+      let dx = 0, dy = 0, sc = 1, op = easeOutCubic(q);
+      if (E === 0 || E === 3) dy = 60 * (1 - easeOutCubic(q)); else if (E === 1 || E === 4) dx = -140 * (1 - easeOutCubic(q)); else sc = .8 + .2 * easeOutBack(q);
+      ctx.save(); ctx.globalAlpha = op * outOp; ctx.translate(540 + dx, c.y + c.h / 2 + dy); ctx.scale(sc, sc); ctx.translate(-540, -(c.y + c.h / 2));
+      ctx.beginPath(); ctx.roundRect(72, c.y, 936, c.h, 28); ctx.fillStyle = 'rgba(255,255,255,.05)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(212,255,31,.4)'; ctx.stroke();
+      ctx.fillStyle = LIME; ctx.beginPath(); ctx.arc(140, c.y + c.h / 2, 40, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = BG; ctx.font = `900 44px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(i + 1), 140, c.y + c.h / 2 + 2); ctx.textAlign = 'left';
+      ctx.restore();
+      ctx.save(); ctx.globalAlpha = outOp; ctx.translate(dx, dy);
+      drawBlock(t, c.b, { t0: c.t0 + .05, outT: 1e9 }); ctx.restore();
+    });
+  }
 }
 
 function drawLogo(x0c, by, size, c1, c2){
@@ -429,37 +557,40 @@ function drawPill(text, cx, cy, sc, fill, stroke, color){
 }
 
 function renderFrame(t){
-  const p = S, OUT = p.outro, F = MODELO.final;
+  const p = S, OUT = p.outro, F = MODELO.final, e = MODELO.estrutura;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.textAlign = 'left';
   const o = offiState(t);
   drawBackground(t, o.cx, o.cy);
-
-  if (o.op > 0 && o.size > 1 && offi.complete && offi.naturalWidth){
+  const offiFirst = e !== 2; // na pergunta, o Offi fica por cima da tela verde
+  const drawOffi = () => { if (o.op > 0 && o.size > 1 && offi.complete && offi.naturalWidth){
     ctx.save(); ctx.globalAlpha = o.op; ctx.translate(o.cx, o.cy); ctx.rotate(o.rot);
     ctx.shadowColor = 'rgba(212,255,31,.35)'; ctx.shadowBlur = 90 * o.size / 460;
-    ctx.drawImage(offi, -o.size / 2, -o.size / 2, o.size, o.size); ctx.restore();
-  }
+    ctx.drawImage(offi, -o.size / 2, -o.size / 2, o.size, o.size); ctx.restore(); } };
+  if (offiFirst) drawOffi();
+  drawConteudo(t);
+  if (!offiFirst) drawOffi();
 
   // tag
   let tagOp = mix(t, 1, 1.4, 0, 1, easeOutCubic); const tagTx = mix(t, 1, 1.4, -40, 0, easeOutCubic);
   if (t > OUT) tagOp *= mix(t, OUT, OUT + .4, 1, 0, easeInCubic);
   if (tagOp > 0 && p.tag){
-    ctx.save(); ctx.globalAlpha = tagOp; ctx.fillStyle = '#fff'; ctx.font = `800 30px ${FONT}`; ctx.textBaseline = 'top';
-    const txt = p.tag.toUpperCase(), tagY = MODELO.layout === 2 ? 250 : 254;
-    const tx = MODELO.layout === 1 ? 540 - spacedWidth(txt, 3) / 2 : 96;
-    if (MODELO.layout === 4){ ctx.fillStyle = LIME; ctx.beginPath(); ctx.arc(tx + 10, tagY + 14, 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; drawSpaced(txt, tx + 34 + tagTx, tagY, 3); }
+    const onLime = e === 2 && t > 1.2 && t < p.mid + .2;
+    ctx.save(); ctx.globalAlpha = tagOp; ctx.fillStyle = onLime ? BG : '#fff'; ctx.font = `800 30px ${FONT}`; ctx.textBaseline = 'top';
+    const txt = p.tag.toUpperCase(), tagY = 254, lay = e === 0 ? MODELO.layout : 0;
+    const tx = lay === 1 ? 540 - spacedWidth(txt, 3) / 2 : 96;
+    if (lay === 4 || e === 4){ ctx.fillStyle = LIME; ctx.beginPath(); ctx.arc(tx + 10, tagY + 14, 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; drawSpaced(txt, tx + 34 + tagTx, tagY, 3); }
     else drawSpaced(txt, tx + tagTx, tagY, 3);
     ctx.restore();
   }
 
-  drawText(t);
-
   // marca discreta
   const mOp = mix(t, 1.4, 1.8, 0, .9, easeOutCubic) * mix(t, OUT, OUT + .3, 1, 0, easeInCubic);
-  if (mOp > 0){
+  if (mOp > 0 && !(e === 2 && t < p.mid + .3)){
     ctx.save(); ctx.globalAlpha = mOp; ctx.font = `900 36px ${FONT}`; ctx.textBaseline = 'alphabetic';
-    const mx = MODELO.layout === 1 ? 540 - (spacedWidth('THE OFFICE', -.5)) / 2 : 96, my = MODELO.layout === 1 ? 1700 : 1609;
-    ctx.fillStyle = '#fff'; const x = drawSpaced('THE ', mx, my, -.5); ctx.fillStyle = LIME; drawSpaced('OFFICE', x, my, -.5); ctx.restore();
+    const center = (e === 0 && MODELO.layout === 1) || e === 1;
+    const mx = center ? 540 - (spacedWidth('THE OFFICE', -.5)) / 2 : 96, my = e === 0 && MODELO.layout === 1 ? 1700 : 1609;
+    if (!(e === 1)) { ctx.fillStyle = '#fff'; const x = drawSpaced('THE ', mx, my, -.5); ctx.fillStyle = LIME; drawSpaced('OFFICE', x, my, -.5); }
+    ctx.restore();
   }
 
   // encerramento
@@ -738,26 +869,38 @@ Responda só com JSON neste formato: {"opcoes":[{"estilo":"curta","legenda":"...
   $('genCaps').disabled = false;
 };
 
-// ===== rodizio de modelos =====
-MODELOS.forEach(m => { const o = document.createElement('option'); o.value = m.n; o.textContent = `Modelo ${String(m.n).padStart(3, '0')}`; $('modelo').append(o); });
+// ===== rodizio de modelos (lidos do banco de dados "modelos"; padrao embutido se vazio) =====
+let modelosDb = null, modelosFromDb = false;
+function preencherLista(){
+  const sel = $('modelo'), cur = MODELO ? MODELO.n : 1; sel.textContent = '';
+  MODELOS.forEach(m => { const o = document.createElement('option'); o.value = m.n;
+    o.textContent = `${String(m.n).padStart(3, '0')} · ${DIMS.estrutura[m.estrutura]}${m.ativo === false ? ' (fora do sorteio)' : ''}`; sel.append(o); });
+  sel.value = cur;
+  const fora = MODELOS.filter(m => m.ativo === false).length;
+  $('modeloFonte').textContent = (modelosFromDb ? 'Modelos salvos no banco de dados.' : 'Usando os modelos padrão (banco de dados indisponível).') + (fora ? ` ${fora} fora do sorteio.` : '');
+}
 function recentes(){
-  // mais recente primeiro: historico do banco de dados + deste navegador
   let local = []; try { local = JSON.parse(store.get('reelstudio-modelos') || '[]'); } catch(e){}
   const db = (typeof usos !== 'undefined' ? usos : []).filter(u => u.tipo === 'modelo').map(u => u.n);
   return [...new Set([...db, ...local])];
 }
-function atualizarLivres(){ const r = new Set(recentes()); $('modeloLivres').textContent = `${MODELOS.length - r.size} ainda não usados`; }
+function atualizarLivres(){
+  const r = new Set(recentes()), ativos = MODELOS.filter(m => m.ativo !== false);
+  $('modeloLivres').textContent = `${ativos.filter(m => !r.has(m.n)).length} de ${ativos.length} ainda não usados`;
+}
 function setModelo(n){
-  MODELO = MODELOS[n - 1] || MODELOS[0]; $('modelo').value = MODELO.n;
-  $('modeloNome').textContent = modeloNome(MODELO); store.set('reelstudio-modelo', MODELO.n);
+  MODELO = MODELOS.find(m => m.n === n) || MODELOS[0]; $('modelo').value = MODELO.n;
+  $('modeloNome').textContent = modeloNome(MODELO); $('ativoToggle').checked = MODELO.ativo !== false;
+  store.set('reelstudio-modelo', MODELO.n);
   readParams();
 }
 function sortearModelo(){
-  const rec = recentes(), bloqueio = new Set(rec.slice(0, Math.min(rec.length, 70)));
-  bloqueio.add(MODELO.n);
-  let pool = MODELOS.filter(m => !rec.includes(m.n) && m.n !== MODELO.n);
-  if (!pool.length) pool = MODELOS.filter(m => !bloqueio.has(m.n));
-  if (!pool.length) pool = MODELOS.filter(m => m.n !== MODELO.n);
+  const ativos = MODELOS.filter(m => m.ativo !== false && m.n !== MODELO.n), rec = recentes();
+  let pool = ativos.filter(m => !rec.includes(m.n));
+  if (!pool.length){ const bloq = new Set(rec.slice(0, Math.floor(ativos.length * .7))); pool = ativos.filter(m => !bloq.has(m.n)); }
+  if (!pool.length) pool = ativos.length ? ativos : MODELOS;
+  // prefere uma estrutura diferente da atual, para o proximo video mudar de verdade
+  const outra = pool.filter(m => m.estrutura !== MODELO.estrutura); if (outra.length) pool = outra;
   setModelo(pool[Math.floor(Math.random() * pool.length)].n);
 }
 function marcarModeloUsado(n){
@@ -767,6 +910,27 @@ function marcarModeloUsado(n){
 }
 $('modelo').addEventListener('change', () => setModelo(parseInt($('modelo').value, 10)));
 $('shuffle').onclick = sortearModelo;
+$('ativoToggle').addEventListener('change', async e => {
+  const want = e.target.checked;
+  if (!modelosDb){ MODELO.ativo = want; preencherLista(); atualizarLivres(); return; }
+  try { await modelosDb.doc('m' + String(MODELO.n).padStart(3, '0')).update({ ativo: want }); }
+  catch(err){ e.target.checked = !want; $('modeloFonte').textContent = 'Não foi possível salvar: só quem pode editar a página muda o sorteio.'; }
+});
+const validoModelo = d => d && Number.isInteger(d.n) && d.n >= 1 && d.n <= 999 && DK.every(k => Number.isInteger(d[k]) && d[k] >= 0 && d[k] < DIMS[k].length);
+if (window.claude && window.claude.use){
+  window.claude.use('db').then(d => {
+    if (!d) return;
+    modelosDb = d.collection('modelos');
+    modelosDb.onSnapshot(snap => {
+      const list = snap.docs.map(x => x.data()).filter(validoModelo).map(x => ({ ...x, ativo: x.ativo !== false })).sort((a, b) => a.n - b.n);
+      if (!list.length) return;
+      MODELOS = list; modelosFromDb = true;
+      const cur = MODELOS.find(m => m.n === MODELO.n) || MODELOS[0];
+      preencherLista(); if (!recording) setModelo(cur.n); atualizarLivres();
+    }, () => {});
+  }).catch(() => {});
+}
+preencherLista();
 
 autoName(); readParams();
 { const saved = parseInt(store.get('reelstudio-modelo') || '', 10); if (saved >= 1 && saved <= 100) setModelo(saved); else sortearModelo(); }
