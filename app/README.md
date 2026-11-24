@@ -64,3 +64,11 @@ cópia em `app/modelos.json`). Na página, "Incluir este modelo no sorteio" tira
 modelo do rodízio. Depois de cada vídeo o app sorteia outro modelo, de estrutura diferente,
 priorizando os nunca usados (histórico na coleção `usos`). O número vai no nome do arquivo
 (`...-m037.mp4`). Amostra das 5 estruturas: `app/estruturas-amostra.jpg`.
+
+## Dentro do Hub (Redes e Anúncios)
+
+O Reel Studio também está inteiro na aba **🎬 Reels / TikTok** do "Hub The Office — Redes e Anúncios"
+(https://claude.ai/artifact/FuZzJonxgbGETZH6mHjoep). Cópia da página em `app/hub_redes_anuncios.html`.
+O hub tem banco de dados próprio, com os mesmos 300 modelos e o histórico copiado em 24/11/2026;
+daqui pra frente, o que for usado no hub fica registrado no banco do hub (e o Reel Studio avulso
+continua com o banco dele).
