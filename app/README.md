@@ -30,3 +30,15 @@ no celular pela mesma rede Wi-Fi.
 a animação é desenhada num canvas e gravada em tempo real (MP4 no Chrome/Edge/Safari,
 WebM no Firefox). Publicada como página privada no claude.ai:
 https://claude.ai/artifact/XXb1Qa6yMe9aSXcbiLvWEc
+
+## Banco de conteúdo (sem gastar créditos)
+
+`app/banco.json` tem 1.000 títulos (frases no formato do reel), 1.000 legendas e 74 hashtags,
+divididos em 6 temas (tráfego pago, sites com IA, diferencial do presencial, prova social,
+matrícula, curiosidade de mercado). Gerado por `templates/gen_banco.py`, que combina blocos
+escritos à mão. Para ampliar, acrescente frases nas listas do script e rode
+`python3 templates/gen_banco.py`, depois republique a página com o novo `banco.json`.
+
+Na página, "Buscar no banco" escolhe 3 títulos e 3 legendas do tema (detectado pela tag/descrição
+ou escolhido na lista), com hashtags menos usadas. O que é confirmado fica registrado no banco de
+dados da página (coleção `usos`) e deixa de aparecer no topo das buscas.

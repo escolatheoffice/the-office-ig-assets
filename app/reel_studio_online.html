@@ -72,6 +72,7 @@ textarea{resize:vertical;min-height:80px}
 .opt .k{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
 .opt .k b{color:var(--lime);font-weight:700}
 .opt p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.tags{color:var(--lime);font-size:13px;overflow-wrap:anywhere}
 .opt .tags{color:var(--lime);font-size:13px;overflow-wrap:anywhere}
 .btn.sm{padding:8px 16px;font-size:13px;align-self:flex-start}
 @media (prefers-reduced-motion:reduce){.btn{transition:none}}
@@ -130,16 +131,28 @@ textarea{resize:vertical;min-height:80px}
     </section>
 
     <section class="card" id="aiCard">
-      <h2>Legendas automáticas</h2>
+      <h2>Banco de conteúdo <span class="counter" id="bankInfo">carregando…</span></h2>
       <div class="fields">
         <div class="field">
           <label for="descricao">Sobre o que é o vídeo?</label>
-          <textarea id="descricao" placeholder="Ex.: mostrar que hoje a IA monta um site em minutos, mas quem vende é quem entende de estratégia. Convidar para a turma presencial de Sites com IA."></textarea>
-          <span class="hint">Usa também a frase, a tag e o CTA acima. Gera 3 opções de legenda com hashtags; escolha uma para confirmar.</span>
+          <textarea id="descricao" placeholder="Ex.: mostrar que a IA monta um site rápido, mas quem vende é quem entende de estratégia."></textarea>
         </div>
-        <div class="actions"><button class="btn" id="genCaps" type="button">Gerar 3 legendas</button></div>
+        <div class="field">
+          <label for="tema">Modelo / tema do reel</label>
+          <select id="tema"><option value="">Detectar pela tag e descrição</option></select>
+        </div>
+        <div class="actions">
+          <button class="btn" id="searchBank" type="button">Buscar no banco</button>
+          <button class="btn ghost" id="genCaps" type="button">Gerar com IA (usa créditos)</button>
+        </div>
+        <span class="hint">A busca no banco não gasta créditos. O que você confirma fica registrado como usado e sai do topo das próximas buscas.</span>
         <p class="msg" id="aiMsg" style="margin:0"></p>
+        <div class="opts" id="titleOpts"></div>
         <div class="opts" id="opts"></div>
+        <div class="field" id="usedBox" hidden>
+          <label>Hashtags já usadas</label>
+          <div class="tags" id="usedTags"></div>
+        </div>
       </div>
     </section>
 
@@ -445,45 +458,127 @@ $('copyCap').onclick = async () => {
   setTimeout(() => $('copyCap').textContent = 'Copiar legenda', 1800);
 };
 
-// ===== legendas automaticas (Claude) =====
-let sampleApi = null, capOpts = [];
-if (window.claude && window.claude.use) window.claude.use('sample').then(s => { sampleApi = s; if (!s) noAI(); }).catch(noAI);
-else noAI();
-function noAI(){ $('genCaps').disabled = true; $('aiMsg').textContent = 'Legendas automáticas só funcionam com o link aberto no claude.ai.'; }
+// ===== banco de conteudo (sem creditos) + legendas com IA =====
+let BANK = null, dbApi = null, sampleApi = null, usos = [], usedIds = new Set(), tagCount = {};
+let capOpts = [], chosenCap = -1, titleOpts = [], chosenTitle = -1;
+const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+fetch('banco.json').then(r => { if (!r.ok) throw 0; return r.json(); }).then(b => {
+  BANK = b;
+  Object.entries(b.temas).forEach(([k, v]) => { const o = document.createElement('option'); o.value = k; o.textContent = v.nome; $('tema').append(o); });
+  try { const t = store.get('reelstudio-tema'); if (t) $('tema').value = t; } catch(e){}
+  updateBankInfo();
+}).catch(() => { $('bankInfo').textContent = 'banco indisponível'; $('searchBank').disabled = true; });
+$('tema').addEventListener('change', () => store.set('reelstudio-tema', $('tema').value));
+
+function updateBankInfo(){
+  if (!BANK) return;
+  const nt = BANK.titulos.filter(x => usedIds.has(x.id)).length, nl = BANK.legendas.filter(x => usedIds.has(x.id)).length;
+  $('bankInfo').textContent = `${BANK.titulos.length - nt} títulos e ${BANK.legendas.length - nl} legendas livres`;
+  const top = Object.entries(tagCount).sort((a, b) => b[1] - a[1]);
+  $('usedBox').hidden = !top.length; $('usedTags').textContent = top.map(([t, n]) => `${t} (${n})`).join('  ');
+}
+
+if (window.claude && window.claude.use){
+  window.claude.use('db').then(d => {
+    dbApi = d; if (!d) return;
+    d.collection('usos').orderBy('em', 'desc').limit(1000).onSnapshot(snap => {
+      usos = snap.docs.map(x => x.data() || {});
+      usedIds = new Set(usos.map(u => u.ref).filter(Boolean));
+      tagCount = {}; usos.forEach(u => (u.hashtags || []).forEach(h => { tagCount[h] = (tagCount[h] || 0) + 1; }));
+      updateBankInfo();
+    }, () => {});
+  }).catch(() => {});
+  window.claude.use('sample').then(s => { sampleApi = s; if (!s) noAI(); }).catch(noAI);
+} else noAI();
+function noAI(){ $('genCaps').disabled = true; $('genCaps').title = 'Disponível só com o link aberto no claude.ai'; }
+
+async function registrar(u){
+  if (!dbApi) return;
+  try { await dbApi.collection('usos').add({ ...u, em: Date.now() }); }
+  catch(e){ $('aiMsg').textContent = e && e.code === 'quota_exceeded' ? 'O histórico de uso está cheio. Peça para limpar registros antigos.' : 'Usado, mas não consegui registrar no histórico agora.'; }
+}
+
+function detectTema(){
+  if ($('tema').value) return $('tema').value;
+  const txt = norm($('tag').value + ' ' + $('descricao').value + ' ' + $('texto').value);
+  let best = null, bs = 0;
+  Object.entries(BANK.temas).forEach(([k, v]) => { const s = v.chaves.reduce((a, c) => a + (txt.includes(norm(c)) ? 1 : 0), 0); if (s > bs){ bs = s; best = k; } });
+  return best || 'trafego';
+}
+function pick(list, tema, n){
+  const words = norm($('descricao').value + ' ' + $('tag').value).split(/[^a-z0-9]+/).filter(w => w.length > 3);
+  return list.filter(x => x.tema === tema).map(x => {
+    const t = norm(x.texto); const score = words.reduce((a, w) => a + (t.includes(w) ? 1 : 0), 0);
+    return { x, k: (usedIds.has(x.id) ? -1000 : 0) + score * 10 + Math.random() * 9 };
+  }).sort((a, b) => b.k - a.k).reduce((acc, o) => {
+    // variedade: nao repete o mesmo inicio nem o mesmo fim entre as opcoes
+    const parts = o.x.texto.split(/\n\n|\|/), head = parts[0], tail = parts[parts.length - 1];
+    if (acc.length < n && !acc.some(y => y.head === head || y.tail === tail)) acc.push({ x: o.x, head, tail });
+    return acc;
+  }, []).map(o => o.x);
+}
+function pickTags(tema){
+  const least = (arr, n, skip) => arr.filter(h => !skip.has(h)).map(h => ({ h, k: (tagCount[h] || 0) + Math.random() * .9 })).sort((a, b) => a.k - b.k).slice(0, n).map(o => o.h);
+  const out = ['#theoffice']; const s = new Set(out);
+  least(BANK.hashtags[tema] || [], 4, s).forEach(h => { out.push(h); s.add(h); });
+  least(BANK.hashtags.geral, 3, s).forEach(h => out.push(h));
+  return out;
+}
 
 function fullCaption(o){ return (o.legenda.trim() + '\n\n' + o.hashtags.join(' ')).trim(); }
-function renderOpts(chosen){
-  const box = $('opts'); box.textContent = '';
-  capOpts.forEach((o, i) => {
-    const el = document.createElement('div'); el.className = 'opt' + (chosen === i ? ' chosen' : '');
-    const k = document.createElement('div'); k.className = 'k';
-    const a = document.createElement('span'); a.textContent = `Opção ${i + 1}` + (o.estilo ? ` · ${o.estilo}` : '');
-    const b = document.createElement('b'); b.textContent = chosen === i ? 'Confirmada' : `${fullCaption(o).length} caracteres`;
-    k.append(a, b);
-    const p = document.createElement('p'); p.textContent = o.legenda;
-    const tg = document.createElement('div'); tg.className = 'tags'; tg.textContent = o.hashtags.join(' ');
-    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn sm' + (chosen === i ? '' : ' ghost');
-    btn.textContent = chosen === i ? 'Usando esta legenda' : 'Usar esta legenda';
-    btn.onclick = () => {
-      $('legenda').value = fullCaption(o); $('legenda').dispatchEvent(new Event('input'));
-      renderOpts(i); $('aiMsg').textContent = `Opção ${i + 1} confirmada e colocada na legenda da postagem. Você ainda pode editar.`;
-    };
-    el.append(k, p, tg, btn); box.append(el);
-  });
+function optCard(label, right, chosen, bodyNodes, btnText, onUse){
+  const el = document.createElement('div'); el.className = 'opt' + (chosen ? ' chosen' : '');
+  const k = document.createElement('div'); k.className = 'k';
+  const a = document.createElement('span'); a.textContent = label; const b = document.createElement('b'); b.textContent = right;
+  k.append(a, b);
+  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn sm' + (chosen ? '' : ' ghost'); btn.textContent = btnText; btn.onclick = onUse;
+  el.append(k, ...bodyNodes, btn); return el;
 }
+function para(text, cls){ const p = document.createElement(cls ? 'div' : 'p'); if (cls) p.className = cls; p.textContent = text; return p; }
+
+function renderTitles(){
+  const box = $('titleOpts'); box.textContent = '';
+  titleOpts.forEach((t, i) => box.append(optCard(`Título ${i + 1}`, chosenTitle === i ? 'Confirmado' : (usedIds.has(t.id) ? 'já usado' : 'livre'),
+    chosenTitle === i, [para(t.texto.replace(/\*/g, '').split('|').join('\n'))], chosenTitle === i ? 'Usando este título' : 'Usar este título', () => {
+      $('texto').value = t.texto; $('texto').dispatchEvent(new Event('input'));
+      if (chosenTitle !== i) registrar({ tipo: 'titulo', ref: t.id, tema: t.tema });
+      chosenTitle = i; renderTitles(); $('aiMsg').textContent = `Título ${i + 1} colocado na frase do vídeo.`;
+    })));
+}
+function renderOpts(){
+  const box = $('opts'); box.textContent = '';
+  capOpts.forEach((o, i) => box.append(optCard(`Legenda ${i + 1}` + (o.estilo ? ` · ${o.estilo}` : ''), chosenCap === i ? 'Confirmada' : `${fullCaption(o).length} caracteres`,
+    chosenCap === i, [para(o.legenda), para(o.hashtags.join(' '), 'tags')], chosenCap === i ? 'Usando esta legenda' : 'Usar esta legenda', () => {
+      $('legenda').value = fullCaption(o); $('legenda').dispatchEvent(new Event('input'));
+      if (chosenCap !== i) registrar({ tipo: o.ref ? 'legenda' : 'legenda-ia', ref: o.ref || null, tema: o.tema || null, hashtags: o.hashtags });
+      chosenCap = i; renderOpts(); $('aiMsg').textContent = `Legenda ${i + 1} confirmada e colocada na legenda da postagem. Você ainda pode editar.`;
+    })));
+}
+
+$('searchBank').onclick = () => {
+  if (!BANK) return;
+  const tema = detectTema();
+  titleOpts = pick(BANK.titulos, tema, 3); chosenTitle = -1;
+  capOpts = pick(BANK.legendas, tema, 3).map(l => ({ ref: l.id, tema, estilo: BANK.temas[tema].nome, legenda: l.texto, hashtags: pickTags(tema) })); chosenCap = -1;
+  renderTitles(); renderOpts();
+  $('aiMsg').textContent = `Tema: ${BANK.temas[tema].nome}. Escolha um título e uma legenda. Clique em buscar de novo para outras opções.`;
+};
 
 $('genCaps').onclick = async () => {
   if (!sampleApi) return noAI();
   const desc = $('descricao').value.trim();
   if (!desc){ $('aiMsg').textContent = 'Escreva sobre o que é o vídeo para gerar as legendas.'; $('descricao').focus(); return; }
   $('genCaps').disabled = true; $('aiMsg').textContent = 'Escrevendo 3 opções…'; $('opts').textContent = '';
-  const prompt = `Você escreve legendas para TikTok e Instagram Reels da The Office, uma escola presencial de marketing digital (tráfego pago, sites com IA) com turmas pequenas. Tom: direto, brasileiro, próximo, sem exageros nem promessas de resultado garantido.
+  const usadas = Object.keys(tagCount).slice(0, 40).join(' ');
+  const prompt = `Você escreve legendas para TikTok e Instagram Reels da The Office, uma escola presencial de marketing digital (tráfego pago, sites com IA) com turmas pequenas. Tom: direto, brasileiro, próximo, sem exageros nem promessas de resultado garantido. Nunca cite cidade, quantidade de aulas ou horas do curso, nem preço.
 
 Dados do vídeo:
 - Descrição: ${desc}
 - Frase na tela: ${$('texto').value.replace(/[|*]/g, ' ').replace(/\s+/g, ' ').trim()}
 - Tema/tag: ${$('tag').value}
 - CTA do vídeo: ${$('cta').value}
+${usadas ? '- Hashtags já usadas recentemente (prefira variar): ' + usadas : ''}
 
 Escreva 3 opções de legenda em português do Brasil, cada uma com um estilo diferente: 1) curta e provocativa, 2) explicativa com valor (2-4 frases), 3) storytelling curto. Cada legenda começa com um gancho forte na primeira linha, pode usar no máximo 2 emojis e termina com uma chamada para ação coerente com o CTA. Não coloque hashtags dentro do texto da legenda.
 Para cada opção, gere de 5 a 8 hashtags relevantes em português, misturando amplas e de nicho, sempre incluindo #theoffice. Legenda + hashtags com no máximo 600 caracteres.
@@ -492,17 +587,16 @@ Responda só com JSON neste formato: {"opcoes":[{"estilo":"curta","legenda":"...
   try {
     const r = await sampleApi.json(prompt, { modelTier: 'default', cache: false });
     const list = (r && Array.isArray(r.opcoes) ? r.opcoes : []).slice(0, 3).map(o => ({
-      estilo: String(o.estilo || '').slice(0, 30),
-      legenda: String(o.legenda || '').trim(),
-      hashtags: (Array.isArray(o.hashtags) ? o.hashtags : []).map(h => '#' + String(h).replace(/^#+/, '').replace(/\s+/g, '')).filter(h => h.length > 1).slice(0, 10)
+      estilo: String(o.estilo || '').slice(0, 30), legenda: String(o.legenda || '').trim(),
+      hashtags: (Array.isArray(o.hashtags) ? o.hashtags : []).map(h => '#' + norm(h).replace(/[^a-z0-9_]/g, '')).filter(h => h.length > 1).slice(0, 10)
     })).filter(o => o.legenda);
     if (!list.length) throw { code: 'empty' };
-    capOpts = list; renderOpts(-1);
-    $('aiMsg').textContent = 'Escolha uma opção para confirmar. Clique em gerar de novo para outras 3.';
+    capOpts = list; chosenCap = -1; renderOpts();
+    $('aiMsg').textContent = 'Escolha uma opção para confirmar.';
   } catch(e){
     const c = e && e.code;
     $('aiMsg').textContent = c === 'not_granted' ? 'Permissão para usar o Claude negada nesta página.' : c === 'rate_limited' ? 'Muitos pedidos seguidos. Espere um pouco e tente de novo.' : 'Não consegui gerar as legendas agora. Tente de novo.';
-    if (c === 'not_granted') { $('genCaps').disabled = true; return; }
+    if (c === 'not_granted') return;
   }
   $('genCaps').disabled = false;
 };
