@@ -255,7 +255,11 @@ const DIMS = {
   destaque:['Pulso', 'Marca-texto', 'Sublinhado', 'Neon'],
   offi:    ['Flutuar', 'Balanço', 'Respirar', 'Órbita'],
   final:   ['Assinatura', 'Tela verde', 'Zoom'],
+  moldura: ['Sem moldura', 'Borda', 'Barra de progresso', 'Colchetes', 'Faixas de cinema'],
+  caixa:   ['Texto normal', 'MAIÚSCULAS'],
+  camera:  ['Câmera fixa', 'Zoom lento', 'Batida'],
 };
+const NOVAS = ['moldura', 'caixa', 'camera'];
 const DK = Object.keys(DIMS);
 function mulberry32(a){ return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 // dimensoes que cada estrutura realmente usa (layout so vale para "Frase com Offi")
@@ -266,11 +270,12 @@ function distModelos(a, b){
 }
 const MODELOS_PADRAO = (() => {
   const rnd = mulberry32(2026), quota = [30, 18, 18, 17, 17], out = [];
-  const first = { estrutura: 0, layout: 0, entrada: 0, fundo: 0, destaque: 0, offi: 0, final: 0 };
+  const ORIG = ['layout', 'entrada', 'fundo', 'destaque', 'offi', 'final']; // ordem original: mantem os modelos 1-100 identicos
+  const first = { estrutura: 0, layout: 0, entrada: 0, fundo: 0, destaque: 0, offi: 0, final: 0, moldura: 0, caixa: 0, camera: 0 };
   const tryFill = (e, need, minD) => {
     let guard = 0;
     while (out.filter(m => m.estrutura === e).length < need && guard++ < 60000){
-      const c = { estrutura: e }; DK.slice(1).forEach(k => c[k] = Math.floor(rnd() * DIMS[k].length)); if (e !== 0) c.layout = 0;
+      const c = { estrutura: e, moldura: 0, caixa: 0, camera: 0 }; ORIG.forEach(k => c[k] = Math.floor(rnd() * DIMS[k].length)); if (e !== 0) c.layout = 0;
       if (out.every(m => distModelos(m, c) >= minD)) out.push(c);
     }
   };
@@ -280,10 +285,22 @@ const MODELOS_PADRAO = (() => {
   // intercala estruturas para a numeracao nao ficar em blocos
   const by = quota.map((_, e) => out.filter(m => m.estrutura === e && m !== first));
   const seq = [first]; while (by.some(l => l.length)) by.forEach(l => { if (l.length) seq.push(l.shift()); });
-  return seq.slice(0, 100).map((m, i) => ({ ...m, n: i + 1, ativo: true }));
+  const base = seq.slice(0, 100).map((m, i) => ({ ...m, moldura: 0, caixa: 0, camera: 0, n: i + 1, ativo: true }));
+  // +200 modelos (101-300) usando tambem moldura, caixa e camera; mesma regra de distancia
+  const r2 = mulberry32(2027), quota2 = [50, 38, 38, 37, 37], extra = [];
+  quota2.forEach((q, e) => {
+    let guard = 0;
+    while (extra.filter(m => m.estrutura === e).length < q && guard++ < 200000){
+      const c = { estrutura: e }; DK.slice(1).forEach(k => c[k] = Math.floor(r2() * DIMS[k].length)); if (e !== 0) c.layout = 0;
+      if ([...base, ...extra].every(m => distModelos(m, c) >= 3)) extra.push(c);
+    }
+  });
+  const by2 = quota2.map((_, e) => extra.filter(m => m.estrutura === e)), seq2 = [];
+  while (by2.some(l => l.length)) by2.forEach(l => { if (l.length) seq2.push(l.shift()); });
+  return [...base, ...seq2.map((m, i) => ({ ...m, n: 101 + i, ativo: true }))];
 })();
 let MODELOS = MODELOS_PADRAO;
-function modeloNome(m){ return [DIMS.estrutura[m.estrutura], ...(m.estrutura === 0 ? ['layout'] : []).map(k => DIMS[k][m[k]]), ...['entrada', 'fundo', 'destaque', 'offi', 'final'].map(k => DIMS[k][m[k]])].join(' · '); }
+function modeloNome(m){ return [DIMS.estrutura[m.estrutura], ...(m.estrutura === 0 ? ['layout'] : []).map(k => DIMS[k][m[k]]), ...['entrada', 'fundo', 'destaque', 'offi', 'final'].map(k => DIMS[k][m[k]]), ...NOVAS.filter(k => m[k]).map(k => DIMS[k][m[k]])].join(' · '); }
 
 const DOTS = (() => { const r = mulberry32(7); return Array.from({ length: 70 }, () => ({ x: r() * W, y: r() * H, r: 2 + r() * 4, a: .12 + r() * .3, v: 15 + r() * 35 })); })();
 
@@ -321,6 +338,7 @@ const splitLines = s => s.split('|').map(x => x.trim()).filter(Boolean);
 function layout(){
   const p = S, m = MODELO, OUT = p.duration - 4.5;
   Object.assign(p, { outro: OUT, fade0: p.duration - .5, fade1: p.duration });
+  if (m.caixa === 1) p.texto = p.texto.toLocaleUpperCase('pt-BR');
   const lines = splitLines(p.texto), e = m.estrutura;
   p.offiPath = null;
   if (e === 0){
@@ -559,6 +577,10 @@ function drawPill(text, cx, cy, sc, fill, stroke, color){
 function renderFrame(t){
   const p = S, OUT = p.outro, F = MODELO.final, e = MODELO.estrutura;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.textAlign = 'left';
+  const cam = MODELO.camera === 1 ? 1 + .07 * easeInOutCubic(clamp01(t / p.duration))
+            : MODELO.camera === 2 && t > 1.2 && t < OUT ? 1 + .035 * Math.exp(-((t - 1.2) % .8) * 7) : 1;
+  ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+  if (cam !== 1){ ctx.translate(540, 900); ctx.scale(cam, cam); ctx.translate(-540, -900); }
   const o = offiState(t);
   drawBackground(t, o.cx, o.cy);
   const offiFirst = e !== 2; // na pergunta, o Offi fica por cima da tela verde
@@ -614,8 +636,28 @@ function renderFrame(t){
     if (cOp > 0 && p.cta){ ctx.save(); ctx.globalAlpha = cOp; ctx.translate(0, 120 * (1 - easeOutCubic(clamp01((t - OUT - .6) / .5)))); drawPill(p.cta, 540, H - 346.5, pulse, 'rgba(212,255,31,.10)', LIME, '#fff'); ctx.restore(); }
   }
 
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  drawMoldura(t);
   const bo = mix(t, p.fade0, p.fade1, 0, 1);
   if (bo > 0){ ctx.globalAlpha = bo; ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+}
+
+function drawMoldura(t){
+  const f = MODELO.moldura; if (!f) return;
+  const op = mix(t, .6, 1.2, 0, 1, easeOutCubic); if (op <= 0) return;
+  const onLime = MODELO.final === 1 && t > S.outro + .3;
+  const col = onLime ? BG : LIME;
+  ctx.save(); ctx.globalAlpha = op;
+  if (f === 1){ ctx.strokeStyle = col; ctx.globalAlpha = op * .7; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(36, 36, W - 72, H - 72, 44); ctx.stroke(); }
+  else if (f === 2){ ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(0, 0, W, 12); ctx.fillStyle = col; ctx.fillRect(0, 0, W * clamp01(t / S.duration), 12); }
+  else if (f === 3){
+    ctx.strokeStyle = col; ctx.lineWidth = 8; ctx.lineCap = 'round'; const m = 60, L = 110 * op;
+    [[m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1]].forEach(([x, y, sx, sy]) => { ctx.beginPath(); ctx.moveTo(x, y + sy * L); ctx.lineTo(x, y); ctx.lineTo(x + sx * L, y); ctx.stroke(); });
+  } else if (f === 4){
+    const h = 110 * op; ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, h); ctx.fillRect(0, H - h, W, h);
+    ctx.fillStyle = LIME; ctx.globalAlpha = op * .8; ctx.fillRect(0, h, W, 3); ctx.fillRect(0, H - h - 3, W, 3);
+  }
+  ctx.restore();
 }
 
 // ===== interface =====
@@ -916,13 +958,14 @@ $('ativoToggle').addEventListener('change', async e => {
   try { await modelosDb.doc('m' + String(MODELO.n).padStart(3, '0')).update({ ativo: want }); }
   catch(err){ e.target.checked = !want; $('modeloFonte').textContent = 'Não foi possível salvar: só quem pode editar a página muda o sorteio.'; }
 });
+const completar = d => { const o = { ...d }; NOVAS.forEach(k => { if (o[k] == null) o[k] = 0; }); return o; };
 const validoModelo = d => d && Number.isInteger(d.n) && d.n >= 1 && d.n <= 999 && DK.every(k => Number.isInteger(d[k]) && d[k] >= 0 && d[k] < DIMS[k].length);
 if (window.claude && window.claude.use){
   window.claude.use('db').then(d => {
     if (!d) return;
     modelosDb = d.collection('modelos');
     modelosDb.onSnapshot(snap => {
-      const list = snap.docs.map(x => x.data()).filter(validoModelo).map(x => ({ ...x, ativo: x.ativo !== false })).sort((a, b) => a.n - b.n);
+      const list = snap.docs.map(x => x.data()).map(completar).filter(validoModelo).map(x => ({ ...x, ativo: x.ativo !== false })).sort((a, b) => a.n - b.n);
       if (!list.length) return;
       MODELOS = list; modelosFromDb = true;
       const cur = MODELOS.find(m => m.n === MODELO.n) || MODELOS[0];

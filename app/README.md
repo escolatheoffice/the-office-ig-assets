@@ -54,10 +54,12 @@ Os vídeos mudam de roteiro, não só de estilo. São 5 estruturas:
 5. **Lista**: cada linha da frase vira um cartão numerado que entra um por vez.
 
 Cada estrutura combina estilos de entrada do texto, fundo, destaque, movimento do Offi e
-encerramento (a "Frase com Offi" também varia o layout). São 30 + 18 + 18 + 17 + 17 modelos;
-dois modelos da mesma estrutura diferem em pelo menos 3 estilos. O Modelo 001 é o original.
+encerramento (a "Frase com Offi" também varia o layout). Os modelos 101–300 usam ainda
+moldura (borda, barra de progresso, colchetes, faixas de cinema), caixa do texto (normal ou
+MAIÚSCULAS) e câmera (fixa, zoom lento, batida). Por estrutura: 80 + 56 + 56 + 54 + 54 = 300;
+dois modelos da mesma estrutura diferem em pelo menos 3 elementos. O Modelo 001 é o original.
 
-Os 100 modelos ficam no banco de dados da página (coleção `modelos`, documentos `m001`…`m100`,
+Os 300 modelos ficam no banco de dados da página (coleção `modelos`, documentos `m001`…`m300`,
 cópia em `app/modelos.json`). Na página, "Incluir este modelo no sorteio" tira ou devolve um
 modelo do rodízio. Depois de cada vídeo o app sorteia outro modelo, de estrutura diferente,
 priorizando os nunca usados (histórico na coleção `usos`). O número vai no nome do arquivo
